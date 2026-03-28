@@ -1,0 +1,23 @@
+# PyBullet timing logs (auto-generated)
+timings_*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+*.egg-info/
+
+# Models (optionnel - décommenter si tu veux les exclure)
+# models/
+
+# Logs TensorBoard
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp

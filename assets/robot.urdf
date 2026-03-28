@@ -1,0 +1,194 @@
+<?xml version="1.0"?>
+<!--
+================================================================================
+🤖 ROBOT AUTO-ÉQUILIBRANT - URDF RÉALISTE
+================================================================================
+Robot à 2 roues type "Segway miniature"
+
+Dimensions réelles:
+- Base: 230mm x 84mm x 5mm (plaque PCB)
+- Hauteur totale: ~180mm (3 plateaux + composants)
+- Roues: diamètre 75mm, largeur 20mm
+- Entraxe: 270mm (roues sur l'axe X, écart ±135mm)
+
+Masse totale: ~1.1 kg
+- Corps (plateaux + composants): ~1.0 kg
+- Roues: 2 x 48g = 96g
+
+Physique:
+- Roues utilisent des CYLINDRES pour collision
+- Friction latérale élevée empêche le glissement perpendiculaire
+- Centre de masse réaliste (légèrement au-dessus de l'axe des roues)
+================================================================================
+-->
+<robot name="self_balancing_robot">
+
+  <!-- ==================== CORPS PRINCIPAL ==================== -->
+  <link name="base_link">
+    <inertial>
+      <!-- Masse totale du corps (sans roues) -->
+      <mass value="1.0"/>
+      <!-- Centre de masse au-dessus de l'axe des roues -->
+      <origin xyz="0 0 0.12" rpy="0 0 0"/>
+      <!-- Inertie approximée pour un bloc vertical -->
+      <inertia ixx="0.003" ixy="0" ixz="0" iyy="0.003" iyz="0" izz="0.001"/>
+    </inertial>
+    
+    <!-- Plaque basse (base) -->
+    <visual name="base_plate">
+      <origin xyz="0 0 0.07" rpy="0 0 0"/>
+      <geometry><box size="0.23 0.084 0.005"/></geometry>
+      <material name="blue"><color rgba="0.1 0.3 0.8 1"/></material>
+    </visual>
+    
+    <!-- Plaque milieu -->
+    <visual name="middle_plate">
+      <origin xyz="0 0 0.12" rpy="0 0 0"/>
+      <geometry><box size="0.23 0.084 0.005"/></geometry>
+      <material name="cyan"><color rgba="0.1 0.6 0.8 1"/></material>
+    </visual>
+    
+    <!-- Plaque haute -->
+    <visual name="top_plate">
+      <origin xyz="0 0 0.165" rpy="0 0 0"/>
+      <geometry><box size="0.23 0.084 0.005"/></geometry>
+      <material name="dark"><color rgba="0.05 0.05 0.25 1"/></material>
+    </visual>
+    
+    <!-- Tiges de support (4 coins) -->
+    <visual name="rod_fl">
+      <origin xyz="0.10 0.035 0.1175" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.004" length="0.09"/></geometry>
+      <material name="silver"><color rgba="0.8 0.8 0.8 1"/></material>
+    </visual>
+    <visual name="rod_fr">
+      <origin xyz="0.10 -0.035 0.1175" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.004" length="0.09"/></geometry>
+      <material name="silver"/>
+    </visual>
+    <visual name="rod_rl">
+      <origin xyz="-0.10 0.035 0.1175" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.004" length="0.09"/></geometry>
+      <material name="silver"/>
+    </visual>
+    <visual name="rod_rr">
+      <origin xyz="-0.10 -0.035 0.1175" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.004" length="0.09"/></geometry>
+      <material name="silver"/>
+    </visual>
+    
+    <!-- Batterie (masse principale en bas pour stabilité) -->
+    <visual name="battery">
+      <origin xyz="0 0 0.085" rpy="0 0 0"/>
+      <geometry><box size="0.10 0.04 0.025"/></geometry>
+      <material name="red"><color rgba="0.6 0.1 0.1 1"/></material>
+    </visual>
+    
+    <!-- Raspberry Pi -->
+    <visual name="rpi">
+      <origin xyz="0 0 0.13" rpy="0 0 0"/>
+      <geometry><box size="0.085 0.056 0.018"/></geometry>
+      <material name="green"><color rgba="0.1 0.6 0.1 1"/></material>
+    </visual>
+    
+    <!-- IMU/MPU (en haut pour mesurer l'angle) -->
+    <visual name="imu">
+      <origin xyz="0.06 0 0.17" rpy="0 0 0"/>
+      <geometry><box size="0.02 0.02 0.003"/></geometry>
+      <material name="yellow"><color rgba="0.9 0.9 0.1 1"/></material>
+    </visual>
+    
+    <!-- Collision simplifiée: une seule boîte englobante -->
+    <collision>
+      <origin xyz="0 0 0.12" rpy="0 0 0"/>
+      <geometry><box size="0.23 0.084 0.10"/></geometry>
+    </collision>
+  </link>
+
+  <!-- ==================== ROUE GAUCHE ==================== -->
+  <!-- Position: x=-0.135 (côté gauche), y=0, z=0.0375 (rayon) -->
+  <link name="left_wheel">
+    <inertial>
+      <mass value="0.048"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <!-- Inertie d'un cylindre plein: Ixx=Izz=(m/12)*(3r²+h²), Iyy=(m*r²)/2 -->
+      <inertia ixx="0.00002" ixy="0" ixz="0" iyy="0.00004" iyz="0" izz="0.00002"/>
+    </inertial>
+    
+    <!-- Visual: cylindre noir pour la roue -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.0375" length="0.02"/></geometry>
+      <material name="wheel_black"><color rgba="0.15 0.15 0.15 1"/></material>
+    </visual>
+    <!-- Marqueur ROUGE sur la face extérieure (côté gauche) -->
+    <visual>
+      <origin xyz="-0.011 0.025 0" rpy="0 1.5708 0"/>
+      <geometry><box size="0.002 0.02 0.015"/></geometry>
+      <material name="marker_red"><color rgba="1.0 0.0 0.0 1"/></material>
+    </visual>
+    <!-- Marqueur JAUNE opposé -->
+    <visual>
+      <origin xyz="-0.011 -0.025 0" rpy="0 1.5708 0"/>
+      <geometry><box size="0.002 0.02 0.015"/></geometry>
+      <material name="marker_yellow"><color rgba="1.0 1.0 0.0 1"/></material>
+    </visual>
+    
+    <!-- Collision: cylindre orienté comme la roue -->
+    <!-- Friction latérale élevée pour empêcher le glissement -->
+    <collision>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.0375" length="0.02"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="left_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="left_wheel"/>
+    <origin xyz="-0.135 0 0.0375" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <dynamics damping="0.001" friction="0.0"/>
+  </joint>
+
+  <!-- ==================== ROUE DROITE ==================== -->
+  <link name="right_wheel">
+    <inertial>
+      <mass value="0.048"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.00002" ixy="0" ixz="0" iyy="0.00004" iyz="0" izz="0.00002"/>
+    </inertial>
+    
+    <!-- Visual: cylindre noir pour la roue -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.0375" length="0.02"/></geometry>
+      <material name="wheel_black"/>
+    </visual>
+    <!-- Marqueur ROUGE sur la face extérieure (côté droit) -->
+    <visual>
+      <origin xyz="0.011 0.025 0" rpy="0 1.5708 0"/>
+      <geometry><box size="0.002 0.02 0.015"/></geometry>
+      <material name="marker_red"/>
+    </visual>
+    <!-- Marqueur JAUNE opposé -->
+    <visual>
+      <origin xyz="0.011 -0.025 0" rpy="0 1.5708 0"/>
+      <geometry><box size="0.002 0.02 0.015"/></geometry>
+      <material name="marker_yellow"/>
+    </visual>
+    
+    <collision>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.0375" length="0.02"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="right_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="right_wheel"/>
+    <origin xyz="0.135 0 0.0375" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <dynamics damping="0.001" friction="0.0"/>
+  </joint>
+
+</robot>

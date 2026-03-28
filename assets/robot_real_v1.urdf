@@ -1,0 +1,203 @@
+<?xml version="1.0"?>
+<robot name="robot_real_v1">
+
+  <!-- Base plate: 0.23 x 0.084 x 0.005 -->
+  <!-- wheel_radius=0.0375, wheel_width=0.02 -->
+
+  <link name="base_link">
+    <inertial>
+      <mass value="0.453"/>
+      <origin xyz="0 0 0.07" rpy="0 0 0"/>
+      <inertia ixx="0.002" ixy="0" ixz="0" iyy="0.002" iyz="0" izz="0.001"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0.07" rpy="0 0 0"/>
+      <geometry><box size="0.23 0.084 0.005"/></geometry>
+      <material name="blue"><color rgba="0.1 0.3 0.8 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.07" rpy="0 0 0"/>
+      <geometry><box size="0.23 0.084 0.005"/></geometry>
+    </collision>
+  </link>
+
+  <link name="middle_plate">
+    <inertial>
+      <mass value="0.068"/>
+      <origin xyz="0 0 0.12" rpy="0 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.0005"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0.12" rpy="0 0 0"/>
+      <geometry><box size="0.23 0.084 0.005"/></geometry>
+      <material name="cyan"><color rgba="0.1 0.6 0.8 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.12" rpy="0 0 0"/>
+      <geometry><box size="0.23 0.084 0.005"/></geometry>
+    </collision>
+  </link>
+  <joint name="middle_plate_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="middle_plate"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="top_plate">
+    <inertial>
+      <mass value="0.090"/>
+      <origin xyz="0 0 0.16" rpy="0 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.0005"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0.16" rpy="0 0 0"/>
+      <geometry><box size="0.23 0.084 0.005"/></geometry>
+      <material name="dark"><color rgba="0.05 0.05 0.25 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.16" rpy="0 0 0"/>
+      <geometry><box size="0.23 0.084 0.005"/></geometry>
+    </collision>
+  </link>
+  <joint name="top_plate_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="top_plate"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- TIGES -->
+  <link name="rod_fl">
+    <inertial><mass value="0.009"/><origin xyz="0 0 0.09"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+    <visual><origin xyz="0 0 0.09"/><geometry><cylinder radius="0.004" length="0.18"/></geometry><material name="rod"><color rgba="0.8 0.8 0.8 1"/></material></visual>
+    <collision><origin xyz="0 0 0.09"/><geometry><cylinder radius="0.004" length="0.18"/></geometry></collision>
+  </link>
+  <joint name="rod_fl_joint" type="fixed"><parent link="base_link"/><child link="rod_fl"/><origin xyz="0.11 0.04 0.0725" rpy="0 0 0"/></joint>
+
+  <link name="rod_fr">
+    <inertial><mass value="0.009"/><origin xyz="0 0 0.09"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+    <visual><origin xyz="0 0 0.09"/><geometry><cylinder radius="0.004" length="0.18"/></geometry><material name="rod"/></visual>
+    <collision><origin xyz="0 0 0.09"/><geometry><cylinder radius="0.004" length="0.18"/></geometry></collision>
+  </link>
+  <joint name="rod_fr_joint" type="fixed"><parent link="base_link"/><child link="rod_fr"/><origin xyz="0.11 -0.04 0.0725" rpy="0 0 0"/></joint>
+
+  <link name="rod_rl">
+    <inertial><mass value="0.009"/><origin xyz="0 0 0.09"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+    <visual><origin xyz="0 0 0.09"/><geometry><cylinder radius="0.004" length="0.18"/></geometry><material name="rod"/></visual>
+    <collision><origin xyz="0 0 0.09"/><geometry><cylinder radius="0.004" length="0.18"/></geometry></collision>
+  </link>
+  <joint name="rod_rl_joint" type="fixed"><parent link="base_link"/><child link="rod_rl"/><origin xyz="-0.11 0.04 0.0725" rpy="0 0 0"/></joint>
+
+  <link name="rod_rr">
+    <inertial><mass value="0.009"/><origin xyz="0 0 0.09"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+    <visual><origin xyz="0 0 0.09"/><geometry><cylinder radius="0.004" length="0.18"/></geometry><material name="rod"/></visual>
+    <collision><origin xyz="0 0 0.09"/><geometry><cylinder radius="0.004" length="0.18"/></geometry></collision>
+  </link>
+  <joint name="rod_rr_joint" type="fixed"><parent link="base_link"/><child link="rod_rr"/><origin xyz="-0.11 -0.04 0.0725" rpy="0 0 0"/></joint>
+
+  <!-- COMPOSANTS -->
+  <link name="bts_left">
+    <inertial><mass value="0.060"/><origin xyz="0 0 0.075"/><inertia ixx="5e-5" ixy="0" ixz="0" iyy="5e-5" iyz="0" izz="5e-5"/></inertial>
+    <visual><origin xyz="0 0 0.075"/><geometry><box size="0.05 0.05 0.02"/></geometry><material name="bts"><color rgba="0.2 0.2 0.2 1"/></material></visual>
+    <collision><origin xyz="0 0 0.075"/><geometry><box size="0.05 0.05 0.02"/></geometry></collision>
+  </link>
+  <joint name="bts_left_joint" type="fixed"><parent link="base_link"/><child link="bts_left"/><origin xyz="0.03 0.02 0.00" rpy="0 0 0"/></joint>
+
+  <link name="bts_right">
+    <inertial><mass value="0.060"/><origin xyz="0 0 0.075"/><inertia ixx="5e-5" ixy="0" ixz="0" iyy="5e-5" iyz="0" izz="5e-5"/></inertial>
+    <visual><origin xyz="0 0 0.075"/><geometry><box size="0.05 0.05 0.02"/></geometry><material name="bts"/></visual>
+    <collision><origin xyz="0 0 0.075"/><geometry><box size="0.05 0.05 0.02"/></geometry></collision>
+  </link>
+  <joint name="bts_right_joint" type="fixed"><parent link="base_link"/><child link="bts_right"/><origin xyz="-0.03 -0.02 0.00" rpy="0 0 0"/></joint>
+
+  <link name="rpi4">
+    <inertial><mass value="0.046"/><origin xyz="0 0 0.125"/><inertia ixx="2e-5" ixy="0" ixz="0" iyy="2e-5" iyz="0" izz="2e-5"/></inertial>
+    <visual><origin xyz="0 0 0.125"/><geometry><box size="0.085 0.056 0.018"/></geometry><material name="rpi"><color rgba="0.1 0.6 0.1 1"/></material></visual>
+    <collision><origin xyz="0 0 0.125"/><geometry><box size="0.085 0.056 0.018"/></geometry></collision>
+  </link>
+  <joint name="rpi4_joint" type="fixed"><parent link="base_link"/><child link="rpi4"/><origin xyz="0 0 0" rpy="0 0 0"/></joint>
+
+  <link name="ubec">
+    <inertial><mass value="0.015"/><origin xyz="0 0 0.12"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+    <visual><origin xyz="0 0 0.12"/><geometry><box size="0.04 0.025 0.02"/></geometry><material name="ubec"><color rgba="0.7 0.5 0.1 1"/></material></visual>
+    <collision><origin xyz="0 0 0.12"/><geometry><box size="0.04 0.025 0.02"/></geometry></collision>
+  </link>
+  <joint name="ubec_joint" type="fixed"><parent link="base_link"/><child link="ubec"/><origin xyz="0.05 0 0" rpy="0 0 0"/></joint>
+
+  <link name="battery_future">
+    <inertial><mass value="0.250"/><origin xyz="0 0 0.12"/><inertia ixx="0.0002" ixy="0" ixz="0" iyy="0.0002" iyz="0" izz="0.0002"/></inertial>
+    <visual><origin xyz="0 0 0.12"/><geometry><box size="0.12 0.04 0.03"/></geometry><material name="bat"><color rgba="0.6 0.1 0.1 1"/></material></visual>
+    <collision><origin xyz="0 0 0.12"/><geometry><box size="0.12 0.04 0.03"/></geometry></collision>
+  </link>
+  <joint name="battery_joint" type="fixed"><parent link="base_link"/><child link="battery_future"/><origin xyz="-0.03 0 0" rpy="0 0 0"/></joint>
+
+  <link name="imu_mpu">
+    <inertial><mass value="0.003"/><origin xyz="0 0 0.072"/><inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/></inertial>
+    <visual><origin xyz="0 0 0.072"/><geometry><box size="0.02 0.02 0.005"/></geometry><material name="imu"><color rgba="0.9 0.9 0.1 1"/></material></visual>
+    <collision><origin xyz="0 0 0.072"/><geometry><box size="0.02 0.02 0.005"/></geometry></collision>
+  </link>
+  <joint name="imu_joint" type="fixed"><parent link="base_link"/><child link="imu_mpu"/><origin xyz="0.08 0 0" rpy="0 0 0"/></joint>
+
+  <!-- ========== ROUES ========== -->
+  <link name="left_wheel_link">
+    <inertial>
+      <mass value="0.048"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.0002" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0002"/>
+    </inertial>
+    <!-- Roue principale noire -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.0375" length="0.02"/></geometry>
+      <material name="wheel_black"><color rgba="0.08 0.08 0.08 1"/></material>
+    </visual>
+    <!-- Marqueur gris pour voir rotation -->
+    <visual>
+      <origin xyz="0 0 0.019" rpy="0 1.5708 0"/>
+      <geometry><box size="0.022 0.0375 0.038"/></geometry>
+      <material name="wheel_gray"><color rgba="0.5 0.5 0.5 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.0375" length="0.02"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="left_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="left_wheel_link"/>
+    <origin xyz="-0.135 0 0.0375" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+  </joint>
+
+  <link name="right_wheel_link">
+    <inertial>
+      <mass value="0.048"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.0002" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0002"/>
+    </inertial>
+    <!-- Roue principale noire -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.0375" length="0.02"/></geometry>
+      <material name="wheel_black"/>
+    </visual>
+    <!-- Marqueur gris pour voir rotation -->
+    <visual>
+      <origin xyz="0 0 0.019" rpy="0 1.5708 0"/>
+      <geometry><box size="0.022 0.0375 0.038"/></geometry>
+      <material name="wheel_gray"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.0375" length="0.02"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="right_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="right_wheel_link"/>
+    <origin xyz="0.135 0 0.0375" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+  </joint>
+
+</robot>
