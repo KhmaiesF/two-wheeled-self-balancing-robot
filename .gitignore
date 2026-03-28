@@ -3,6 +3,7 @@ timings_*.json
 
 # Python
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -10,12 +11,16 @@ __pycache__/
 venv/
 env/
 *.egg-info/
+pycache/
+*.onnx
 
-# Models (optionnel - décommenter si tu veux les exclure)
-# models/
-
-# Logs TensorBoard
+# Generated training outputs
 logs/
+models/
+tensorboard/
+checkpoints/
+*.tfevents.*
+*.npz
 
 # IDE
 .vscode/
