@@ -5,7 +5,6 @@ Usage: python -m src.convert_to_onnx
 
 import argparse
 import os
-import numpy as np
 
 try:
     import torch
@@ -25,8 +24,9 @@ def convert_to_onnx(model_path: str, output_dir: str = "real/models"):
     policy = model.policy
     policy.eval()
 
-    obs_dim = model.observation_space.shape[0]
-    dummy_input = torch.randn(1, obs_dim)
+    obs_dim = int(model.observation_space.shape[0])
+    print(f"    Observation dim détectée: {obs_dim}")
+    dummy_input = torch.randn(1, obs_dim, dtype=torch.float32)
     onnx_path = os.path.join(output_dir, "ppo_robot.onnx")
 
     class PolicyWrapper(torch.nn.Module):

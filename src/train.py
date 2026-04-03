@@ -20,16 +20,14 @@ Usage:
 """
 
 import argparse
-import os
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from src.environment import SelfBalancingRobotEnv, PhysicsConfig, RewardConfig
+from src.environment import SelfBalancingRobotEnv
 
 
 def make_env(mode: str = "pid+ppo", enable_push: bool = False, **kwargs):
@@ -67,6 +65,14 @@ def main():
     print(f"Run: {run_name}")
     print(f"Steps: {args.steps:,}")
     print(f"Save dir: {save_dir}")
+
+    probe_env = SelfBalancingRobotEnv(mode="pid+ppo", enable_random_push=False)
+    obs_dim = int(probe_env.observation_space.shape[0])
+    obs_labels = probe_env.get_observation_labels()
+    print(f"Observation dim: {obs_dim}")
+    print(f"Observation labels: {obs_labels}")
+    probe_env.close()
+
     print("=" * 60)
     
     # Créer environnement

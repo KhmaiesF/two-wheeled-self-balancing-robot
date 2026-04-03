@@ -243,8 +243,20 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Affichage debug")
     parser.add_argument("--hz", type=int, default=200, help="Fréquence de contrôle")
     parser.add_argument("--cascade", action="store_true", help="Activer cascade position (OFF par défaut)")
-    parser.add_argument("--gyro-unit", choices=["deg", "rad", "auto"], default="deg",
-                        help="Unité gyro brute IMU (defaut: deg)")
+    parser.add_argument("--gyro-unit", choices=["deg", "rad", "auto"], default="rad",
+                        help="Unite gyro brute IMU (defaut: rad)")
+    parser.add_argument("--debug-signals", action="store_true",
+                        help="Log compact des signaux (toutes 10-20 iterations)")
+    parser.add_argument("--debug-no-ppo-filter", action="store_true",
+                        help="Debug: PPO_FILTER_BETA=0.0 (pas de filtre IIR)")
+    parser.add_argument("--debug-no-rate-limit", action="store_true",
+                        help="Debug: PPO_MAX_DU tres grand (pas de rate-limit)")
+    parser.add_argument("--debug-no-output-ramp", action="store_true",
+                        help="Debug: MAX_RAMP tres grand (pas de rampe u)")
+    parser.add_argument("--debug-no-pwm-ramp", action="store_true",
+                        help="Debug: pwm_ramp_max=0 (pas de rampe PWM)")
+    parser.add_argument("--debug-use-pid-only-gains", action="store_true",
+                        help="Debug: gains PID de run_pid_only.py")
     parser.add_argument("--u-deadband", type=float, default=U_DEADBAND_DEFAULT,
                         help="Deadband en commande u (|u|<=deadband => PWM=0)")
     parser.add_argument("--pwm-min", type=int, default=None,
@@ -267,10 +279,29 @@ def main():
     if pwm_min_effective > pwm_max_effective:
         pwm_min_effective = pwm_max_effective
 
+    # Debug-only overrides (do not change normal behavior unless flags are set).
+    pid_kp = PID_KP
+    pid_ki = PID_KI
+    pid_kd = PID_KD
+    if args.debug_use_pid_only_gains:
+        pid_kp = 20.0
+        pid_ki = 3.0
+        pid_kd = 0.5
+
+    ppo_filter_beta = PPO_FILTER_BETA
+    ppo_max_du = PPO_MAX_DU
+    max_ramp_effective = MAX_RAMP
+    if args.debug_no_ppo_filter:
+        ppo_filter_beta = 0.0
+    if args.debug_no_rate_limit:
+        ppo_max_du = 1e6
+    if args.debug_no_output_ramp:
+        max_ramp_effective = 1e6
+
     print("=" * 60)
     print("🤖 ROBOT AUTO-ÉQUILIBRANT - PID + PPO")
     print("=" * 60)
-    print(f"PID: Kp={PID_KP}, Ki={PID_KI}, Kd={PID_KD}")
+    print(f"PID: Kp={pid_kp}, Ki={pid_ki}, Kd={pid_kd}")
     print(f"Cascade: Kpos={KPOS}, Kvel={KVEL}" if args.cascade else "Cascade: DÉSACTIVÉE (défaut)")
     if args.cascade:
         print("[WARN] Cascade activée sans encodeurs: drift probable (ax bruité).")
@@ -302,10 +333,12 @@ def main():
     base_pwm_ramp_max = int(args.pwm_ramp_max)
     if args.pid_only and base_pwm_ramp_max == PWM_RAMP_MAX_DEFAULT:
         base_pwm_ramp_max = 0
+    if args.debug_no_pwm_ramp:
+        base_pwm_ramp_max = 0
     motor.set_pwm_ramp_max(base_pwm_ramp_max)
 
     # PID
-    pid = PIDController(PIDGains(kp=PID_KP, ki=PID_KI, kd=PID_KD), output_limit=MAX_TORQUE)
+    pid = PIDController(PIDGains(kp=pid_kp, ki=pid_ki, kd=pid_kd), output_limit=MAX_TORQUE)
 
     # PPO
     ppo_model = None
@@ -337,6 +370,18 @@ def main():
     ppo_cooldown_until_step = 0
     t_prev = time.perf_counter()
     last_verbose_log = t_prev
+    debug_interval = 20
+    debug_signals = args.debug_signals
+    summary_window_sec = 2.0
+    summary_last_log = t_prev
+    summary_dt_sum = 0.0
+    summary_dt_max = 0.0
+    summary_count = 0
+    summary_overrun = 0
+    summary_ppo_on = 0
+    summary_max_abs_pitch_deg = 0.0
+    summary_max_abs_u_left = 0.0
+    summary_max_abs_u_right = 0.0
     stat_dt_sum = 0.0
     stat_dt_max = 0.0
     stat_count = 0
@@ -375,6 +420,16 @@ def main():
             # Donc gy DOIT être en rad/s ici.
             pitch = float(filt.update(ax, ay, az, gyro_for_filter_rad_s, dt))
             pitch_rate = gyro_for_filter_rad_s  # PID en rad/s
+            pitch_deg = math.degrees(pitch)
+            pitch_rate_deg_s = math.degrees(pitch_rate)
+
+            if debug_signals:
+                summary_dt_sum += dt_meas
+                summary_dt_max = max(summary_dt_max, dt_meas)
+                summary_count += 1
+                if dt_meas > (1.05 * dt_target):
+                    summary_overrun += 1
+                summary_max_abs_pitch_deg = max(summary_max_abs_pitch_deg, abs(pitch_deg))
 
             # Sécurité
             if not safety.check(pitch):
@@ -443,11 +498,11 @@ def main():
                     u_rl_raw = np.clip(raw_action, -1.0, 1.0).astype(np.float32) * ppo_limit
 
                     # Filtre IIR anti-vibration
-                    u_rl_filt = PPO_FILTER_BETA * u_rl_filt_prev + (1.0 - PPO_FILTER_BETA) * u_rl_raw
+                    u_rl_filt = ppo_filter_beta * u_rl_filt_prev + (1.0 - ppo_filter_beta) * u_rl_raw
 
                     # Rate limit dédié PPO
                     du_rl = u_rl_filt - u_rl_prev
-                    du_rl = np.clip(du_rl, -PPO_MAX_DU, PPO_MAX_DU)
+                    du_rl = np.clip(du_rl, -ppo_max_du, ppo_max_du)
                     u_rl = u_rl_prev + du_rl
 
                     u_rl_prev = u_rl.copy()
@@ -472,8 +527,8 @@ def main():
             if use_ppo:
                 du_left = u_left - last_u_left
                 du_right = u_right - last_u_right
-                du_left = max(-MAX_RAMP, min(MAX_RAMP, du_left))
-                du_right = max(-MAX_RAMP, min(MAX_RAMP, du_right))
+                du_left = max(-max_ramp_effective, min(max_ramp_effective, du_left))
+                du_right = max(-max_ramp_effective, min(max_ramp_effective, du_right))
                 u_left = last_u_left + du_left
                 u_right = last_u_right + du_right
 
@@ -485,6 +540,12 @@ def main():
 
             last_u_left = u_left
             last_u_right = u_right
+
+            if debug_signals:
+                summary_max_abs_u_left = max(summary_max_abs_u_left, abs(u_left))
+                summary_max_abs_u_right = max(summary_max_abs_u_right, abs(u_right))
+                if ppo_on:
+                    summary_ppo_on += 1
 
             # Debug (max 1 ligne/s)
             now_log = time.perf_counter()
@@ -517,6 +578,38 @@ def main():
                 stat_count = 0
                 stat_overrun = 0
                 last_verbose_log = now_log
+
+            if debug_signals and (step_count % debug_interval == 0):
+                ppo_reason = ppo_reason_off or ("" if ppo_on else "no_model")
+                dt_meas_ms = dt_meas * 1000.0
+                loop_ms = (time.perf_counter() - t_start) * 1000.0
+                print(
+                    f"[DBG] pitch={pitch_deg:+6.2f}deg  rate={pitch_rate_deg_s:+7.2f}deg/s  "
+                    f"u_pid={u_pid:+.3f}  u_rl=[{u_rl[0]:+.3f},{u_rl[1]:+.3f}]  "
+                    f"u_pre=[{u_before_ramp_left:+.3f},{u_before_ramp_right:+.3f}]  "
+                    f"u=[{u_left:+.3f},{u_right:+.3f}]  ppo_on={1 if ppo_on else 0}  "
+                    f"ppo_off={ppo_reason or '-'}  dt_meas={dt_meas_ms:.2f}ms  loop_ms={loop_ms:.2f}"
+                )
+
+            if debug_signals and (now_log - summary_last_log) >= summary_window_sec:
+                dt_avg_ms = (summary_dt_sum / max(1, summary_count)) * 1000.0
+                dt_max_ms = summary_dt_max * 1000.0
+                ppo_active_ratio = summary_ppo_on / max(1, summary_count)
+                print(
+                    f"[SUM] dt_avg_ms={dt_avg_ms:.2f}  dt_max_ms={dt_max_ms:.2f}  "
+                    f"overruns={summary_overrun}  ppo_active_ratio={ppo_active_ratio:.2f}  "
+                    f"max_abs_pitch_deg={summary_max_abs_pitch_deg:.2f}  "
+                    f"max_abs_u_left={summary_max_abs_u_left:.3f}  max_abs_u_right={summary_max_abs_u_right:.3f}"
+                )
+                summary_dt_sum = 0.0
+                summary_dt_max = 0.0
+                summary_count = 0
+                summary_overrun = 0
+                summary_ppo_on = 0
+                summary_max_abs_pitch_deg = 0.0
+                summary_max_abs_u_left = 0.0
+                summary_max_abs_u_right = 0.0
+                summary_last_log = now_log
 
             step_count += 1
 

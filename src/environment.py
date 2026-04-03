@@ -1,35 +1,27 @@
 """
 ================================================================================
-🤖 ENVIRONNEMENT ROBOT AUTO-ÉQUILIBRANT - VERSION PROPRE
+🤖 ENVIRONNEMENT ROBOT AUTO-ÉQUILIBRANT - VERSION IMU-ONLY
 ================================================================================
 
 Environnement Gymnasium pour robot à 2 roues auto-équilibrant.
 
-PHYSIQUE RÉALISTE:
-- Robot veut maintenir angle = 0° (vertical)
-- Roues tournent avec le torque NÉCESSAIRE (pas plus)
-- Friction latérale élevée: pas de glissement perpendiculaire aux roues
-- Friction de roulement faible: roues peuvent rouler librement
-- Réponse réaliste aux perturbations externes (push)
+AXE D'EQUILIBRAGE UNIQUE:
+- Le robot penche autour de X dans ce projet
+- tilt = euler[0]
+- tilt_rate = ang_vel[0]
 
-OBSERVATIONS (8 dimensions):
-- pitch: angle d'inclinaison (rad)
-- pitch_rate: vitesse angulaire pitch (rad/s)
-- position_x: dérive avant/arrière (m)
-- velocity_x: vitesse avant/arrière (m/s)
-- left_wheel_speed: vitesse roue gauche (rad/s)
-- right_wheel_speed: vitesse roue droite (rad/s)
-- last_torque_left: dernier couple appliqué gauche
-- last_torque_right: dernier couple appliqué droit
+OBSERVATION PAR DEFAUT (4 dimensions):
+- obs[0] = tilt_angle (rad)
+- obs[1] = tilt_rate (rad/s)
+- obs[2] = last_torque_left (Nm)
+- obs[3] = last_torque_right (Nm)
 
-ACTIONS (2 dimensions continues):
-- Ajustement couple roue gauche [-1, 1]
-- Ajustement couple roue droite [-1, 1]
+OPTION (5 dimensions):
+- obs[4] = angle_setpoint (rad) si include_angle_setpoint=True
 
-MODES:
-- "pid": PID seul (baseline)
-- "ppo": PPO seul (from scratch)  
-- "pid+ppo": PID + correction PPO (recommandé)
+OBJECTIF:
+- Cohérence simulation ↔ réel (Raspberry Pi, IMU sans encodeurs)
+- PPO plus simple, réaliste et robuste
 
 ================================================================================
 """
@@ -37,7 +29,7 @@ MODES:
 from __future__ import annotations
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 import numpy as np
@@ -69,28 +61,34 @@ class PhysicsConfig:
     timestep: float = 1/240            # 240 Hz
     sim_steps_per_action: int = 4      # 60 Hz pour le contrôleur
 
+    # Capteurs/commande pour réduire le mismatch sim ↔ réel
+    tilt_noise_std: float = np.deg2rad(0.20)       # Bruit angle IMU
+    tilt_rate_noise_std: float = np.deg2rad(0.80)  # Bruit gyro
+    gyro_bias_std: float = np.deg2rad(0.30)        # Biais gyro tiré au reset
+    action_smoothing_alpha: float = 0.35           # 0=très lent, 1=sans lissage
+
 
 @dataclass
 class RewardConfig:
     """Configuration des récompenses."""
-    # Objectif principal: rester vertical
-    w_upright: float = 1.0
+    # Objectif principal: stabiliser l'angle
+    w_upright: float = 2.0
+    upright_decay: float = 8.0
+    small_angle_threshold: float = np.deg2rad(4.0)
+    small_angle_bonus: float = 0.8
+
+    # Chute
     angle_limit: float = 0.5           # rad (~28°) - chute si dépassé
-    
-    # Pénalités oscillation
-    w_pitch_rate: float = 0.05
-    
-    # Pénalités dérive
-    w_position: float = 0.1
-    w_velocity: float = 0.02
-    
-    # Pénalités effort
-    w_torque: float = 0.01
-    w_wheel_speed: float = 0.001
-    wheel_speed_soft_limit: float = 15.0  # rad/s - pénalité croissante au-delà
-    
+    fallen_penalty: float = 8.0
+
+    # Pénalités dynamiques/effort
+    w_tilt_rate: float = 0.05
+    w_torque: float = 0.015
+    w_torque_delta: float = 0.03  # Pénalise oscillation de commande
+    w_tilt_rate_delta: float = 0.01  # Pénalise oscillation angulaire
+
     # Bonus/malus
-    fallen_penalty: float = 5.0
+    alive_bonus: float = 0.05
 
 
 # ============================================================================
@@ -105,6 +103,12 @@ class SelfBalancingRobotEnv(gym.Env):
     """
     
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
+    BASE_OBS_LABELS = [
+        "tilt_angle",
+        "tilt_rate",
+        "last_torque_left",
+        "last_torque_right",
+    ]
     
     def __init__(
         self,
@@ -117,6 +121,9 @@ class SelfBalancingRobotEnv(gym.Env):
         enable_random_push: bool = False,
         push_force_range: Tuple[float, float] = (0.3, 1.2),
         push_interval_range: Tuple[int, int] = (100, 300),
+        include_angle_setpoint: bool = False,
+        angle_setpoint: float = 0.0,
+        debug_observation: Optional[bool] = None,
     ):
         super().__init__()
         
@@ -127,15 +134,28 @@ class SelfBalancingRobotEnv(gym.Env):
         self.physics = physics_config or PhysicsConfig()
         self.rewards = reward_config or RewardConfig()
         self.pid_gains = pid_gains or PIDGains(kp=8.9, ki=14.0, kd=0.2)
+        self.include_angle_setpoint = include_angle_setpoint
+        self.angle_setpoint = float(angle_setpoint)
+        self.debug_observation = (
+            bool(int(os.getenv("PPO_DEBUG_OBS", "0")))
+            if debug_observation is None
+            else bool(debug_observation)
+        )
         
         # Push configuration
         self.enable_random_push = enable_random_push
         self.push_force_range = push_force_range
         self.push_interval_range = push_interval_range
+
+        # Observation: 4D par défaut, 5D si setpoint inclus
+        obs_dim = len(self.BASE_OBS_LABELS) + int(self.include_angle_setpoint)
+        self._obs_labels = self.BASE_OBS_LABELS + (
+            ["angle_setpoint"] if self.include_angle_setpoint else []
+        )
         
         # Espaces d'observation et d'action
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(8,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(2,), dtype=np.float32
@@ -152,6 +172,9 @@ class SelfBalancingRobotEnv(gym.Env):
         self._step_count = 0
         self._initial_pos = None
         self._last_torque = np.zeros(2)
+        self._prev_torque = np.zeros(2)
+        self._prev_tilt_rate_true = 0.0
+        self._gyro_bias = 0.0
         self._next_push_step = 0
         self._push_count = 0  # Compteur de push
         
@@ -183,15 +206,27 @@ class SelfBalancingRobotEnv(gym.Env):
         # Reset état
         self._step_count = 0
         self._last_torque = np.zeros(2)
+        self._prev_torque = np.zeros(2)
         self._pid.reset()
         self._push_count = 0  # Reset compteur push
+        self._gyro_bias = float(self.np_random.normal(0.0, self.physics.gyro_bias_std))
+
+        _, tilt_rate_true = self._get_tilt_and_rate(noisy=False)
+        self._prev_tilt_rate_true = tilt_rate_true
         
         # Planifier premier push
         if self.enable_random_push:
             self._schedule_next_push()
         
         obs = self._get_observation()
-        info = {"mode": self.mode}
+        info = {
+            "mode": self.mode,
+            "obs_labels": self._obs_labels,
+            "gyro_bias": float(self._gyro_bias),
+        }
+
+        if self.debug_observation:
+            self._print_debug_observation(obs)
         
         return obs, info
     
@@ -200,21 +235,20 @@ class SelfBalancingRobotEnv(gym.Env):
         action = np.clip(action, -1.0, 1.0)
         
         # Obtenir état actuel
-        pitch, pitch_rate = self._get_pitch_and_rate()
+        tilt, tilt_rate = self._get_tilt_and_rate(noisy=True)
         
         # Calculer torque selon le mode
         if self.mode == "pid":
-            torque = self._pid_control(pitch, pitch_rate)
+            torque_cmd = self._pid_control(tilt, tilt_rate)
         elif self.mode == "ppo":
-            torque = action * self.physics.max_torque
+            torque_cmd = action * self.physics.max_torque
         else:  # pid+ppo
-            pid_torque = self._pid_control(pitch, pitch_rate)
+            pid_torque = self._pid_control(tilt, tilt_rate)
             ppo_correction = action * (self.physics.max_torque * 0.3)  # 30% max
-            torque = pid_torque + ppo_correction
+            torque_cmd = pid_torque + ppo_correction
         
-        # Limiter le torque
-        torque = np.clip(torque, -self.physics.max_torque, self.physics.max_torque)
-        self._last_torque = torque.copy()
+        # Lissage + saturation réaliste du couple
+        torque = self._smooth_torque_command(torque_cmd)
         
         # Appliquer aux moteurs
         self._apply_motor_torque(torque)
@@ -237,10 +271,14 @@ class SelfBalancingRobotEnv(gym.Env):
         # Terminaison
         terminated = self._is_fallen()
         truncated = self._step_count >= self.max_episode_steps
+
+        tilt_true, tilt_rate_true = self._get_tilt_and_rate(noisy=False)
         
         info = {
             "step": self._step_count,
-            "pitch": float(pitch),
+            "tilt": float(tilt_true),
+            "tilt_rate": float(tilt_rate_true),
+            "angle_setpoint": float(self.angle_setpoint),
             "torque": torque.tolist(),
             **reward_info
         }
@@ -341,7 +379,7 @@ class SelfBalancingRobotEnv(gym.Env):
         )
         p.resetBaseVelocity(self._robot_id, [0, 0, 0], [0, 0, 0])
         
-        # Initialiser position initiale AVANT le PID (pour éviter NoneType)
+        # Conservé pour compatibilité et instrumentation éventuelle
         self._initial_pos = np.array([0.0, 0.0])
         
         # Reset roues
@@ -357,8 +395,8 @@ class SelfBalancingRobotEnv(gym.Env):
         # Stabiliser avec contrôle PID actif
         self._pid.reset()
         for _ in range(100):
-            roll, roll_rate = self._get_pitch_and_rate()
-            torque = self._pid_control(roll, roll_rate)
+            tilt, tilt_rate = self._get_tilt_and_rate(noisy=False)
+            torque = self._pid_control(tilt, tilt_rate)
             self._apply_motor_torque(torque)
             p.stepSimulation()
         
@@ -366,73 +404,46 @@ class SelfBalancingRobotEnv(gym.Env):
         pos, _ = p.getBasePositionAndOrientation(self._robot_id)
         self._initial_pos = np.array(pos[:2])
     
-    def _get_pitch_and_rate(self) -> Tuple[float, float]:
-        """Retourne l'angle d'inclinaison et sa vitesse.
-        
-        Note: Le robot a ses roues sur l'axe X, donc il penche autour de X.
-        C'est le ROLL (euler[0]), pas le pitch.
-        """
+    def _get_tilt_and_rate(self, noisy: bool = True) -> Tuple[float, float]:
+        """Retourne tilt et tilt_rate autour de X (axe d'équilibrage)."""
         _, orn = p.getBasePositionAndOrientation(self._robot_id)
         euler = p.getEulerFromQuaternion(orn)
-        # Roll = rotation autour de X (axe des roues)
-        roll = euler[0]
+        tilt = euler[0]
         
         _, ang_vel = p.getBaseVelocity(self._robot_id)
-        roll_rate = ang_vel[0]  # Vitesse angulaire autour de X
+        tilt_rate = ang_vel[0]
+
+        if noisy:
+            tilt += float(self.np_random.normal(0.0, self.physics.tilt_noise_std))
+            tilt_rate += float(self.np_random.normal(0.0, self.physics.tilt_rate_noise_std))
+            tilt_rate += self._gyro_bias
+
+        return float(tilt), float(tilt_rate)
         
-        return roll, roll_rate
+    def _get_pitch_and_rate(self) -> Tuple[float, float]:
+        """Alias rétrocompatible: retourne tilt/tilt_rate sur l'axe X."""
+        return self._get_tilt_and_rate(noisy=False)
     
     def _get_observation(self) -> np.ndarray:
         """Construit le vecteur d'observation."""
-        pos, orn = p.getBasePositionAndOrientation(self._robot_id)
-        lin_vel, ang_vel = p.getBaseVelocity(self._robot_id)
-        euler = p.getEulerFromQuaternion(orn)
-        
-        # Vitesses des roues
-        left_state = p.getJointState(self._robot_id, self._left_joint)
-        right_state = p.getJointState(self._robot_id, self._right_joint)
-        
-        obs = np.array([
-            euler[1],                      # pitch
-            ang_vel[1],                    # pitch_rate
-            pos[0] - self._initial_pos[0], # position_x (dérive)
-            lin_vel[0],                    # velocity_x
-            left_state[1],                 # left_wheel_speed
-            right_state[1],                # right_wheel_speed
-            self._last_torque[0],          # last_torque_left
-            self._last_torque[1],          # last_torque_right
-        ], dtype=np.float32)
+        tilt, tilt_rate = self._get_tilt_and_rate(noisy=True)
+
+        obs_values = [
+            tilt,
+            tilt_rate,
+            float(self._last_torque[0]),
+            float(self._last_torque[1]),
+        ]
+        if self.include_angle_setpoint:
+            obs_values.append(float(self.angle_setpoint))
+
+        obs = np.array(obs_values, dtype=np.float32)
         
         return obs
     
-    def _pid_control(self, pitch: float, pitch_rate: float) -> np.ndarray:
-        """Calcule le couple PID avec contrôle de position (cascade).
-        
-        Note: pitch est en fait roll (angle autour de X).
-        Le signe du couple dépend de la convention de l'URDF.
-        
-        Contrôle en cascade:
-        - Outer loop: position → angle_setpoint (pour éviter la dérive)
-        - Inner loop: angle → torque (pour l'équilibre)
-        """
-        # Récupérer la position actuelle pour le contrôle de dérive
-        pos, _ = p.getBasePositionAndOrientation(self._robot_id)
-        lin_vel, _ = p.getBaseVelocity(self._robot_id)
-        
-        position_drift = pos[0] - self._initial_pos[0]  # Dérive en X
-        velocity_x = lin_vel[0]
-        
-        # Contrôle de position (outer loop)
-        # Si on dérive vers +X, on veut pencher vers -X (angle négatif)
-        Kpos = 0.40  # Gain position
-        Kvel = 0.42  # Gain vitesse
-        
-        angle_setpoint = -Kpos * position_drift - Kvel * velocity_x
-        angle_setpoint = np.clip(angle_setpoint, -0.1, 0.1)  # Limiter à ~6°
-        
-        # Contrôle d'angle (inner loop)
-        # Erreur: on veut angle = angle_setpoint
-        error = pitch - angle_setpoint
+    def _pid_control(self, tilt: float, tilt_rate: float) -> np.ndarray:
+        """Calcule le couple PID d'équilibrage autour de l'axe X."""
+        error = tilt - self.angle_setpoint
         
         # Zone morte (deadband) pour éviter micro-corrections
         if abs(error) < 0.01:  # ~0.5° - ignore les très petites erreurs
@@ -440,11 +451,20 @@ class SelfBalancingRobotEnv(gym.Env):
         
         dt = self.physics.timestep * self.physics.sim_steps_per_action
         
-        # Utiliser pitch_rate directement pour la dérivée (moins bruité)
-        torque = self._pid.update(error, dt, error_rate=pitch_rate)
+        torque = self._pid.update(error, dt, error_rate=tilt_rate)
         
         # Même couple pour les deux roues (équilibrage)
         return np.array([torque, torque])
+
+    def _smooth_torque_command(self, torque_cmd: np.ndarray) -> np.ndarray:
+        """Lissage first-order lag + saturation du couple moteur."""
+        alpha = float(np.clip(self.physics.action_smoothing_alpha, 0.0, 1.0))
+        self._prev_torque = self._last_torque.copy()
+
+        smoothed = (1.0 - alpha) * self._last_torque + alpha * torque_cmd
+        clipped = np.clip(smoothed, -self.physics.max_torque, self.physics.max_torque)
+        self._last_torque = clipped.astype(np.float64)
+        return self._last_torque.copy()
     
     def _apply_motor_torque(self, torque: np.ndarray):
         """Applique le couple aux moteurs."""
@@ -463,66 +483,69 @@ class SelfBalancingRobotEnv(gym.Env):
     
     def _compute_reward(self) -> Tuple[float, Dict]:
         """Calcule la récompense."""
-        pitch, pitch_rate = self._get_pitch_and_rate()
-        pos, _ = p.getBasePositionAndOrientation(self._robot_id)
-        lin_vel, _ = p.getBaseVelocity(self._robot_id)
-        
-        left_state = p.getJointState(self._robot_id, self._left_joint)
-        right_state = p.getJointState(self._robot_id, self._right_joint)
-        wheel_speeds = np.array([abs(left_state[1]), abs(right_state[1])])
-        
-        # Récompense pour rester vertical
-        upright_reward = self.rewards.w_upright * np.exp(-5 * pitch**2)
-        
-        # Pénalité oscillation
-        pitch_rate_penalty = self.rewards.w_pitch_rate * pitch_rate**2
-        
-        # Pénalité dérive position
-        drift = np.sqrt(pos[0]**2 + pos[1]**2)
-        position_penalty = self.rewards.w_position * drift**2
-        
-        # Pénalité vitesse
-        velocity_penalty = self.rewards.w_velocity * (lin_vel[0]**2 + lin_vel[1]**2)
-        
-        # Pénalité effort moteur
-        torque_penalty = self.rewards.w_torque * np.sum(self._last_torque**2)
-        
-        # Pénalité vitesse roues excessive
-        excess = np.maximum(0, wheel_speeds - self.rewards.wheel_speed_soft_limit)
-        wheel_penalty = self.rewards.w_wheel_speed * np.sum(excess**2)
-        
-        # Pénalité chute
-        if self._is_fallen():
-            fallen_penalty = self.rewards.fallen_penalty
-        else:
-            fallen_penalty = 0.0
-        
-        # Total
+        tilt, tilt_rate = self._get_tilt_and_rate(noisy=False)
+        tilt_rate_delta = tilt_rate - self._prev_tilt_rate_true
+        self._prev_tilt_rate_true = tilt_rate
+
+        # Bonus fort près de la verticale
+        upright_reward = self.rewards.w_upright * np.exp(
+            -self.rewards.upright_decay * (tilt ** 2)
+        )
+        small_angle_bonus = (
+            self.rewards.small_angle_bonus
+            if abs(tilt) < self.rewards.small_angle_threshold
+            else 0.0
+        )
+
+        # Pénalités de dynamique/effort
+        tilt_rate_penalty = self.rewards.w_tilt_rate * (tilt_rate ** 2)
+        torque_penalty = self.rewards.w_torque * float(np.sum(self._last_torque ** 2))
+        torque_delta_penalty = self.rewards.w_torque_delta * float(
+            np.sum((self._last_torque - self._prev_torque) ** 2)
+        )
+        tilt_rate_delta_penalty = self.rewards.w_tilt_rate_delta * (tilt_rate_delta ** 2)
+
+        fallen_penalty = self.rewards.fallen_penalty if self._is_fallen() else 0.0
+
         reward = (
-            upright_reward
-            - pitch_rate_penalty
-            - position_penalty
-            - velocity_penalty
+            self.rewards.alive_bonus
+            + upright_reward
+            + small_angle_bonus
+            - tilt_rate_penalty
             - torque_penalty
-            - wheel_penalty
+            - torque_delta_penalty
+            - tilt_rate_delta_penalty
             - fallen_penalty
         )
         
         info = {
+            "reward_alive": self.rewards.alive_bonus,
             "reward_upright": upright_reward,
-            "penalty_pitch_rate": pitch_rate_penalty,
-            "penalty_position": position_penalty,
-            "penalty_velocity": velocity_penalty,
+            "reward_small_angle": small_angle_bonus,
+            "penalty_tilt_rate": tilt_rate_penalty,
             "penalty_torque": torque_penalty,
-            "penalty_wheel": wheel_penalty,
+            "penalty_torque_delta": torque_delta_penalty,
+            "penalty_tilt_rate_delta": tilt_rate_delta_penalty,
+            "penalty_fallen": fallen_penalty,
         }
         
         return float(reward), info
     
     def _is_fallen(self) -> bool:
         """Vérifie si le robot est tombé."""
-        pitch, _ = self._get_pitch_and_rate()
-        return abs(pitch) > self.rewards.angle_limit
+        tilt, _ = self._get_tilt_and_rate(noisy=False)
+        return abs(tilt) > self.rewards.angle_limit
+
+    def get_observation_labels(self) -> List[str]:
+        """Retourne la description de chaque dimension d'observation."""
+        return list(self._obs_labels)
+
+    def _print_debug_observation(self, obs: np.ndarray):
+        """Affiche un exemple d'observation et sa signification."""
+        print("\n[DEBUG OBS] Observation au reset")
+        for idx, (label, value) in enumerate(zip(self._obs_labels, obs.tolist())):
+            print(f"  obs[{idx}] {label:<18} = {value:+.5f}")
+        print()
     
     def _schedule_next_push(self):
         """Planifie le prochain push."""
