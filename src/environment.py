@@ -28,6 +28,7 @@ OBJECTIF:
 
 from __future__ import annotations
 import os
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -123,7 +124,16 @@ class SelfBalancingRobotEnv(gym.Env):
         push_interval_range: Tuple[int, int] = (100, 300),
         include_angle_setpoint: bool = False,
         angle_setpoint: float = 0.0,
+        ppo_scale: float = 1.0,
         debug_observation: Optional[bool] = None,
+        motor_left_scale: float = 1.0,
+        motor_right_scale: float = 1.0,
+        control_delay_steps: int = 0,
+        extra_tilt_bias: float = 0.0,
+        extra_tilt_rate_bias: float = 0.0,
+        extra_noise_scale: float = 1.0,
+        enable_randomized_physics: bool = False,
+        randomization_ranges: Optional[Dict[str, Tuple[float, float]]] = None,
     ):
         super().__init__()
         
@@ -136,10 +146,23 @@ class SelfBalancingRobotEnv(gym.Env):
         self.pid_gains = pid_gains or PIDGains(kp=8.9, ki=14.0, kd=0.2)
         self.include_angle_setpoint = include_angle_setpoint
         self.angle_setpoint = float(angle_setpoint)
+        self.ppo_scale = float(ppo_scale)
         self.debug_observation = (
             bool(int(os.getenv("PPO_DEBUG_OBS", "0")))
             if debug_observation is None
             else bool(debug_observation)
+        )
+        self.motor_left_scale = float(motor_left_scale)
+        self.motor_right_scale = float(motor_right_scale)
+        self.control_delay_steps = int(max(0, control_delay_steps))
+        self.extra_tilt_bias = float(extra_tilt_bias)
+        self.extra_tilt_rate_bias = float(extra_tilt_rate_bias)
+        self.extra_noise_scale = float(max(0.0, extra_noise_scale))
+        self.enable_randomized_physics = enable_randomized_physics
+        self.randomization_ranges = (
+            randomization_ranges
+            if randomization_ranges is not None
+            else self._default_randomization_ranges()
         )
         
         # Push configuration
@@ -177,6 +200,22 @@ class SelfBalancingRobotEnv(gym.Env):
         self._gyro_bias = 0.0
         self._next_push_step = 0
         self._push_count = 0  # Compteur de push
+        self._last_push_step = -1
+        self._last_push_force = 0.0
+        self._last_push_direction = 0
+        self._push_applied_this_step = False
+
+        self._effective_torque_scale = 1.0
+        self._randomization_sample = self._identity_randomization_sample()
+        self._last_applied_torque = np.zeros(2)
+        self._torque_delay_buffer = deque()
+
+        self._base_robot_mass = 1.0
+        self._base_dynamics = {
+            "lateral_friction": self.physics.lateral_friction,
+            "spinning_friction": self.physics.spinning_friction,
+            "rolling_friction": self.physics.rolling_friction,
+        }
         
         # Contrôleur PID
         self._pid = PIDController(self.pid_gains, self.physics.max_torque)
@@ -199,8 +238,12 @@ class SelfBalancingRobotEnv(gym.Env):
         # Initialiser PyBullet si nécessaire
         if self._physics_client is None:
             self._init_pybullet()
+
+        self._reset_control_delay_buffer()
+        self._last_applied_torque = np.zeros(2)
         
         # Reset robot position
+        self._randomization_sample = self._sample_randomization()
         self._reset_robot()
         
         # Reset état
@@ -209,6 +252,10 @@ class SelfBalancingRobotEnv(gym.Env):
         self._prev_torque = np.zeros(2)
         self._pid.reset()
         self._push_count = 0  # Reset compteur push
+        self._last_push_step = -1
+        self._last_push_force = 0.0
+        self._last_push_direction = 0
+        self._push_applied_this_step = False
         self._gyro_bias = float(self.np_random.normal(0.0, self.physics.gyro_bias_std))
 
         _, tilt_rate_true = self._get_tilt_and_rate(noisy=False)
@@ -223,6 +270,12 @@ class SelfBalancingRobotEnv(gym.Env):
             "mode": self.mode,
             "obs_labels": self._obs_labels,
             "gyro_bias": float(self._gyro_bias),
+            "ppo_scale": float(self.ppo_scale),
+            "randomized_physics": bool(self.enable_randomized_physics),
+            "randomization_sample": dict(self._randomization_sample),
+            "motor_left_scale": float(self.motor_left_scale),
+            "motor_right_scale": float(self.motor_right_scale),
+            "control_delay_steps": int(self.control_delay_steps),
         }
 
         if self.debug_observation:
@@ -233,6 +286,7 @@ class SelfBalancingRobotEnv(gym.Env):
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Exécute une action."""
         action = np.clip(action, -1.0, 1.0)
+        self._push_applied_this_step = False
         
         # Obtenir état actuel
         tilt, tilt_rate = self._get_tilt_and_rate(noisy=True)
@@ -245,7 +299,7 @@ class SelfBalancingRobotEnv(gym.Env):
         else:  # pid+ppo
             pid_torque = self._pid_control(tilt, tilt_rate)
             ppo_correction = action * (self.physics.max_torque * 0.3)  # 30% max
-            torque_cmd = pid_torque + ppo_correction
+            torque_cmd = pid_torque + self.ppo_scale * ppo_correction
         
         # Lissage + saturation réaliste du couple
         torque = self._smooth_torque_command(torque_cmd)
@@ -279,7 +333,17 @@ class SelfBalancingRobotEnv(gym.Env):
             "tilt": float(tilt_true),
             "tilt_rate": float(tilt_rate_true),
             "angle_setpoint": float(self.angle_setpoint),
+            "ppo_scale": float(self.ppo_scale),
             "torque": torque.tolist(),
+            "applied_torque": self._last_applied_torque.tolist(),
+            "motor_effort": float(np.sum(np.abs(self._last_applied_torque))),
+            "motor_effort_sq": float(np.sum(self._last_applied_torque ** 2)),
+            "command_asymmetry": float(abs(self._last_applied_torque[0] - self._last_applied_torque[1])),
+            "effective_torque_scale": float(self._effective_torque_scale),
+            "push_applied": bool(self._push_applied_this_step),
+            "last_push_step": int(self._last_push_step),
+            "last_push_force": float(self._last_push_force),
+            "last_push_direction": int(self._last_push_direction),
             **reward_info
         }
         
@@ -352,6 +416,8 @@ class SelfBalancingRobotEnv(gym.Env):
                 self._left_joint = i
             elif "right_wheel" in name:
                 self._right_joint = i
+
+        self._base_robot_mass = float(p.getDynamicsInfo(self._robot_id, -1)[0])
         
         # Configurer friction des roues
         for joint in [self._left_joint, self._right_joint]:
@@ -391,6 +457,9 @@ class SelfBalancingRobotEnv(gym.Env):
                 targetVelocity=0,
                 force=0
             )
+
+        self._reset_control_delay_buffer()
+        self._apply_randomized_physics()
         
         # Stabiliser avec contrôle PID actif
         self._pid.reset()
@@ -414,9 +483,12 @@ class SelfBalancingRobotEnv(gym.Env):
         tilt_rate = ang_vel[0]
 
         if noisy:
-            tilt += float(self.np_random.normal(0.0, self.physics.tilt_noise_std))
-            tilt_rate += float(self.np_random.normal(0.0, self.physics.tilt_rate_noise_std))
+            tilt += float(self.np_random.normal(0.0, self.physics.tilt_noise_std * self.extra_noise_scale))
+            tilt += self.extra_tilt_bias
+
+            tilt_rate += float(self.np_random.normal(0.0, self.physics.tilt_rate_noise_std * self.extra_noise_scale))
             tilt_rate += self._gyro_bias
+            tilt_rate += self.extra_tilt_rate_bias
 
         return float(tilt), float(tilt_rate)
         
@@ -456,6 +528,17 @@ class SelfBalancingRobotEnv(gym.Env):
         # Même couple pour les deux roues (équilibrage)
         return np.array([torque, torque])
 
+    def get_ppo_correction_max_abs(self) -> float:
+        """Amplitude max de correction PPO en mode simulation pid+ppo."""
+        return float(abs(self.ppo_scale) * (self.physics.max_torque * 0.3))
+
+    def get_estimated_ppo_authority_pct(self) -> float:
+        """Estime l'autorité PPO max en % du couple PID max."""
+        pid_max = float(abs(self.physics.max_torque))
+        if pid_max <= 1e-12:
+            return 0.0
+        return float(100.0 * self.get_ppo_correction_max_abs() / pid_max)
+
     def _smooth_torque_command(self, torque_cmd: np.ndarray) -> np.ndarray:
         """Lissage first-order lag + saturation du couple moteur."""
         alpha = float(np.clip(self.physics.action_smoothing_alpha, 0.0, 1.0))
@@ -468,18 +551,43 @@ class SelfBalancingRobotEnv(gym.Env):
     
     def _apply_motor_torque(self, torque: np.ndarray):
         """Applique le couple aux moteurs."""
+        effective_torque = torque * self._effective_torque_scale
+        delayed_torque = self._apply_control_delay(effective_torque)
+
+        motor_scaled_torque = delayed_torque * np.array(
+            [self.motor_left_scale, self.motor_right_scale],
+            dtype=np.float64,
+        )
+        self._last_applied_torque = motor_scaled_torque.copy()
+
         # Roue gauche
         p.setJointMotorControl2(
             self._robot_id, self._left_joint,
             p.TORQUE_CONTROL,
-            force=torque[0]
+            force=motor_scaled_torque[0]
         )
         # Roue droite
         p.setJointMotorControl2(
             self._robot_id, self._right_joint,
             p.TORQUE_CONTROL,
-            force=torque[1]
+            force=motor_scaled_torque[1]
         )
+
+    def _reset_control_delay_buffer(self):
+        """Initialise le buffer de délai de commande moteur."""
+        self._torque_delay_buffer.clear()
+        if self.control_delay_steps > 0:
+            for _ in range(self.control_delay_steps):
+                self._torque_delay_buffer.append(np.zeros(2, dtype=np.float64))
+
+    def _apply_control_delay(self, torque: np.ndarray) -> np.ndarray:
+        """Applique un retard discret de commande via une FIFO."""
+        if self.control_delay_steps <= 0:
+            return torque
+
+        self._torque_delay_buffer.append(np.array(torque, dtype=np.float64))
+        delayed = self._torque_delay_buffer.popleft()
+        return delayed
     
     def _compute_reward(self) -> Tuple[float, Dict]:
         """Calcule la récompense."""
@@ -558,6 +666,10 @@ class SelfBalancingRobotEnv(gym.Env):
         direction = self.np_random.choice([-1, 1])
         
         self._push_count += 1
+        self._push_applied_this_step = True
+        self._last_push_step = int(self._step_count)
+        self._last_push_force = float(force)
+        self._last_push_direction = int(direction)
         dir_str = "→" if direction > 0 else "←"
         print(f"  💨 PUSH #{self._push_count}: {force:.2f}N {dir_str} (t={self._step_count/60:.1f}s)")
         
@@ -568,6 +680,60 @@ class SelfBalancingRobotEnv(gym.Env):
             posObj=[0, 0, 0.12],  # Centre de masse
             flags=p.LINK_FRAME
         )
+
+    def _default_randomization_ranges(self) -> Dict[str, Tuple[float, float]]:
+        """Bornes de randomisation légères pour robustesse sim → réel."""
+        return {
+            "lateral_friction_scale": (0.9, 1.1),
+            "rolling_friction_scale": (0.8, 1.2),
+            "spinning_friction_scale": (0.8, 1.2),
+            "effective_torque_scale": (0.9, 1.1),
+            "base_mass_scale": (0.95, 1.05),
+        }
+
+    def _identity_randomization_sample(self) -> Dict[str, float]:
+        return {
+            "lateral_friction_scale": 1.0,
+            "rolling_friction_scale": 1.0,
+            "spinning_friction_scale": 1.0,
+            "effective_torque_scale": 1.0,
+            "base_mass_scale": 1.0,
+        }
+
+    def _sample_randomization(self) -> Dict[str, float]:
+        """Tire un échantillon de randomisation pour l'épisode."""
+        sample = self._identity_randomization_sample()
+        if not self.enable_randomized_physics:
+            return sample
+
+        for key, value in self.randomization_ranges.items():
+            low, high = value
+            sample[key] = float(self.np_random.uniform(low, high))
+        return sample
+
+    def _apply_randomized_physics(self):
+        """Applique la randomisation physique au reset de l'épisode."""
+        scale = self._randomization_sample
+
+        lateral_friction = self._base_dynamics["lateral_friction"] * scale["lateral_friction_scale"]
+        spinning_friction = self._base_dynamics["spinning_friction"] * scale["spinning_friction_scale"]
+        rolling_friction = self._base_dynamics["rolling_friction"] * scale["rolling_friction_scale"]
+
+        self._effective_torque_scale = scale["effective_torque_scale"]
+
+        for joint in [self._left_joint, self._right_joint]:
+            p.changeDynamics(
+                self._robot_id,
+                joint,
+                lateralFriction=lateral_friction,
+                spinningFriction=spinning_friction,
+                rollingFriction=rolling_friction,
+            )
+
+        p.changeDynamics(self._plane_id, -1, lateralFriction=lateral_friction)
+
+        randomized_mass = self._base_robot_mass * scale["base_mass_scale"]
+        p.changeDynamics(self._robot_id, -1, mass=randomized_mass)
 
 
 # ============================================================================

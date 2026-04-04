@@ -76,6 +76,16 @@ PPO_FILTER_BETA = 0.9           # u_rl_filt = beta*prev + (1-beta)*new
 PPO_MAX_DU = 0.002              # rate-limit par step pour u_rl filtré
 
 
+def _estimate_real_ppo_authority_pct(ppo_scale: float) -> float:
+    """Estime l'autorité PPO max (% vs PID max) selon la formule réelle actuelle."""
+    pid_max = float(abs(MAX_TORQUE))
+    if pid_max <= 1e-12:
+        return 0.0
+    ppo_limit = float(MAX_TORQUE * PPO_RATIO)
+    ppo_max_abs = float(abs(ppo_scale) * PPO_ALPHA * ppo_limit)
+    return float(100.0 * ppo_max_abs / pid_max)
+
+
 class PPOInference:
     """Inférence PPO légère via ONNX Runtime."""
 
@@ -257,6 +267,8 @@ def main():
                         help="Debug: pwm_ramp_max=0 (pas de rampe PWM)")
     parser.add_argument("--debug-use-pid-only-gains", action="store_true",
                         help="Debug: gains PID de run_pid_only.py")
+    parser.add_argument("--ppo-scale", type=float, default=1.0,
+                        help="Coefficient d'autorité PPO sur la correction hybride")
     parser.add_argument("--u-deadband", type=float, default=U_DEADBAND_DEFAULT,
                         help="Deadband en commande u (|u|<=deadband => PWM=0)")
     parser.add_argument("--pwm-min", type=int, default=None,
@@ -353,8 +365,15 @@ def main():
     print(f"Ramp: {'ON (PPO)' if use_ppo else 'OFF (pid_only)'}")
     print(f"Mapping: {'advanced' if use_advanced_mapping else 'legacy'} | U_DEADBAND={args.u_deadband:.3f} | "
           f"PWM_MIN={pwm_min_effective} | PWM_MAX={pwm_max_effective} | PWM_RAMP_BASE={base_pwm_ramp_max}")
+    print(f"PPO scale: {args.ppo_scale:.2f}")
+    if use_ppo:
+        print(f"Estimated PPO authority vs PID max: {_estimate_real_ppo_authority_pct(args.ppo_scale):.2f}%")
+    else:
+        print("Estimated PPO authority vs PID max: 0.00%")
     print(f"PPO correction max: {PPO_RATIO*100:.0f}%")
     print(f"PPO alpha: {PPO_ALPHA:.2f}, warmup: {PPO_WARMUP_SEC:.1f}s, cooldown: {PPO_COOLDOWN_STEPS} steps")
+    if args.debug_signals:
+        print(f"[CFG-DBG] ppo_scale={args.ppo_scale:.2f} ppo_alpha={PPO_ALPHA:.2f} ppo_ratio={PPO_RATIO:.3f}")
     print("=" * 60)
     print("\n🚀 Contrôle actif! CTRL+C pour arrêter.\n")
 
@@ -513,8 +532,8 @@ def main():
                     u_rl_filt_prev[:] = 0.0
 
             # ── Commande finale ──
-            u_left = u_pid + PPO_ALPHA * u_rl[0]
-            u_right = u_pid + PPO_ALPHA * u_rl[1]
+            u_left = u_pid + args.ppo_scale * PPO_ALPHA * u_rl[0]
+            u_right = u_pid + args.ppo_scale * PPO_ALPHA * u_rl[1]
 
             # Clamp total
             u_left = max(-MAX_TORQUE, min(MAX_TORQUE, u_left))
